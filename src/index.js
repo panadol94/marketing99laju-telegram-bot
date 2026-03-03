@@ -535,13 +535,12 @@ async function startBot() {
   });
 
   botStatus = 'starting';
-  bot.launch().then(() => {
-    botStatus = 'active';
-    console.log('[bot] started');
-  }).catch((err) => {
+  bot.launch({ dropPendingUpdates: true }).catch((err) => {
     botStatus = `error: ${err.message}`;
     console.error('[bot] launch failed', err);
   });
+  botStatus = 'active';
+  console.log('[bot] launch initiated');
 
   const shutdown = async (signal) => {
     console.log(`[bot] ${signal} received, shutting down...`);
