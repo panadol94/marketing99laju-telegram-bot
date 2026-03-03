@@ -1,0 +1,17 @@
+{
+  "name": "marketing99laju-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot starter for marketing campaigns",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "telegraf": "^4.16.3"
+  }
+}
