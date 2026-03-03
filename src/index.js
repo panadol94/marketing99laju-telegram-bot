@@ -293,7 +293,10 @@ async function startBot() {
         setTimeout(() => reject(new Error('getMe timeout')), 10000)
       ),
     ]);
-    runtime.botUsername = me?.username || runtime.botUsername;
+    if (me) {
+      bot.botInfo = me;
+      runtime.botUsername = me.username || runtime.botUsername;
+    }
   } catch (err) {
     console.warn('[bot] getMe failed, using BOT_USERNAME fallback:', err.message);
   }
