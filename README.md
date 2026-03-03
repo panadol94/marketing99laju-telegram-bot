@@ -1,31 +1,36 @@
 # marketing99laju-telegram-bot
 
-Telegram marketing bot (lead + conversion style), ready for Coolify deployment.
+Telegram marketing bot for 99Laju flow, ready for Coolify deployment.
+
+## Implemented Flow
+1. Record member username + phone number
+2. Ask member register at 99Laju first
+3. Show menu only after registration + phone verification
+4. Share bot referral link to claim Free Credit (target 20 referrals → RM20)
+5. Menu has **Contact CS** button
+6. Menu has **Welcome Bonus** button
+7. Admin broadcast function
 
 ## Features
-- Express health endpoint: `/health`
-- Runtime stats endpoint: `/stats`
-- Telegram menu flow:
-  - 🎁 Claim Bonus
-  - 📈 Promo Hari Ini
-  - 🤝 Join Agent
-  - ❓ FAQ
-- Keyword auto-reply (`bonus`, `promo`, `agent`, `deposit`, `wd`)
-- Referral tracking via `/start <ref_code>`
-- Lead logging to `data/leads.jsonl`
+- `/start` onboarding gate
+- Contact-share button (Telegram contact request)
+- Manual phone input fallback
+- Lead logging (`data/leads.jsonl`)
+- User/referral persistence (`data/users.json`)
+- Deep-link referral tracking (`/start ref_<userId>`)
 - Admin commands:
   - `/stats`
   - `/broadcast <mesej>`
-- Anti-spam cooldown per user
-- Follow-up nudges (2h + 24h)
+- Health endpoint (`/health`) and stats endpoint (`/stats` HTTP)
 
 ## Environment Variables
 - `BOT_TOKEN` (required)
-- `BOT_NAME` (optional, default: `Marketing99Laju Bot`)
-- `CTA_LINK` (optional, default: `https://t.me/marketing99laju`)
-- `ADMIN_IDS` (optional, comma-separated Telegram user IDs)
-- `COOLDOWN_SECONDS` (optional, default: `8`)
-- `PORT` (optional, default: `3000`)
+- `BOT_NAME` (default: `Marketing99Laju Bot`)
+- `REGISTER_LINK` (default: `https://99laju.com`)
+- `CS_LINK` (default: `https://t.me/marketing99laju`)
+- `ADMIN_IDS` (comma-separated Telegram user IDs)
+- `FREE_CREDIT_TARGET` (default: `20`)
+- `PORT` (default: `3000`)
 
 ## Local Run
 ```bash
@@ -36,5 +41,5 @@ BOT_TOKEN=xxxxx ADMIN_IDS=5925622731 npm start
 ## Deploy (Coolify)
 - Build Pack: `dockerfile`
 - Exposed Port: `3000`
-- Health Check Path: `/health`
-- Set env vars (especially `BOT_TOKEN`) before restart
+- Health check path: `/health`
+- Set env vars before restart (`BOT_TOKEN` wajib)

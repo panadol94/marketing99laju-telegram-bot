@@ -7,8 +7,8 @@ const { Telegraf, Markup } = require('telegraf');
 const PORT = Number(process.env.PORT || 3000);
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const BOT_NAME = process.env.BOT_NAME || 'Marketing99Laju Bot';
-const CTA_LINK = process.env.CTA_LINK || 'https://t.me/marketing99laju';
-const COOLDOWN_SECONDS = Number(process.env.COOLDOWN_SECONDS || 8);
+const REGISTER_LINK = process.env.REGISTER_LINK || 'https://99laju.com';
+const CS_LINK = process.env.CS_LINK || 'https://t.me/marketing99laju';
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_IDS || '')
     .split(',')
@@ -16,14 +16,15 @@ const ADMIN_IDS = new Set(
     .filter(Boolean)
 );
 
+const FREE_CREDIT_TARGET = Number(process.env.FREE_CREDIT_TARGET || 20);
+
 const DATA_DIR = path.join(__dirname, '..', 'data');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.jsonl');
-const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 const runtime = {
-  knownChatIds: new Set(),
-  lastReplyByUser: new Map(),
-  followups: new Map(),
+  users: {},
+  botUsername: '',
   leadsLogged: 0,
 };
 
@@ -31,41 +32,39 @@ function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-function loadState() {
+function loadUsers() {
   try {
-    if (!fs.existsSync(STATE_FILE)) return;
-    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    if (!fs.existsSync(USERS_FILE)) return;
+    const raw = fs.readFileSync(USERS_FILE, 'utf8');
     if (!raw.trim()) return;
     const parsed = JSON.parse(raw);
-    const ids = Array.isArray(parsed.knownChatIds) ? parsed.knownChatIds : [];
-    ids.forEach((id) => runtime.knownChatIds.add(id));
+    runtime.users = parsed && typeof parsed === 'object' ? parsed : {};
   } catch (err) {
-    console.warn('[state] failed to load state:', err.message);
+    console.warn('[users] load failed:', err.message);
+    runtime.users = {};
   }
 }
 
-function saveState() {
+function saveUsers() {
   try {
-    const payload = {
-      knownChatIds: Array.from(runtime.knownChatIds),
-      updatedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2));
+    fs.writeFileSync(USERS_FILE, JSON.stringify(runtime.users, null, 2));
   } catch (err) {
-    console.warn('[state] failed to save state:', err.message);
+    console.warn('[users] save failed:', err.message);
   }
 }
 
-function parseStartPayload(text = '') {
-  const parts = String(text).trim().split(/\s+/);
-  if (parts.length < 2) return '';
-  return parts.slice(1).join(' ').trim();
+function isAdmin(id) {
+  return ADMIN_IDS.has(String(id));
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 async function logLead(ctx, action, extra = {}) {
   try {
     const payload = {
-      time: new Date().toISOString(),
+      time: nowIso(),
       action,
       user: {
         id: ctx.from?.id || null,
@@ -82,92 +81,154 @@ async function logLead(ctx, action, extra = {}) {
     fs.appendFileSync(LEADS_FILE, `${JSON.stringify(payload)}\n`);
     runtime.leadsLogged += 1;
   } catch (err) {
-    console.warn('[lead] failed:', err.message);
+    console.warn('[lead] log failed:', err.message);
   }
 }
 
-function rememberChatId(chatId) {
-  if (!chatId) return;
-  runtime.knownChatIds.add(String(chatId));
-  saveState();
+function parseStartPayload(text = '') {
+  const parts = String(text).trim().split(/\s+/);
+  if (parts.length < 2) return '';
+  return parts.slice(1).join(' ').trim();
 }
 
-function isAdmin(id) {
-  return ADMIN_IDS.has(String(id));
+function parsePhone(text = '') {
+  const cleaned = String(text).replace(/[^\d+]/g, '');
+  if (!cleaned) return null;
+  const digits = cleaned.replace(/\D/g, '');
+  if (digits.length < 8 || digits.length > 15) return null;
+  return cleaned;
 }
 
-function menuKeyboard() {
+function getUser(ctx, create = true) {
+  const id = String(ctx.from?.id || '');
+  if (!id) return null;
+
+  if (!runtime.users[id] && create) {
+    runtime.users[id] = {
+      userId: id,
+      username: ctx.from?.username || null,
+      firstName: ctx.from?.first_name || null,
+      phone: null,
+      registered99laju: false,
+      referrer: null,
+      referrals: [],
+      chatId: ctx.chat?.id ? String(ctx.chat.id) : null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+  }
+
+  const user = runtime.users[id] || null;
+  if (!user) return null;
+
+  user.username = ctx.from?.username || user.username || null;
+  user.firstName = ctx.from?.first_name || user.firstName || null;
+  if (ctx.chat?.id) user.chatId = String(ctx.chat.id);
+  user.updatedAt = nowIso();
+
+  return user;
+}
+
+function isOnboardingComplete(user) {
+  return Boolean(user?.registered99laju && user?.phone);
+}
+
+function addReferralIfNeeded(userId, referrerId) {
+  if (!userId || !referrerId) return;
+  if (userId === referrerId) return;
+
+  const user = runtime.users[userId];
+  if (!user) return;
+  if (user.referrer) return; // one referrer only
+
+  user.referrer = referrerId;
+
+  if (!runtime.users[referrerId]) {
+    runtime.users[referrerId] = {
+      userId: referrerId,
+      username: null,
+      firstName: null,
+      phone: null,
+      registered99laju: false,
+      referrer: null,
+      referrals: [],
+      chatId: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+  }
+
+  const refUser = runtime.users[referrerId];
+  if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
+  if (!refUser.referrals.includes(userId)) refUser.referrals.push(userId);
+
+  user.updatedAt = nowIso();
+  refUser.updatedAt = nowIso();
+}
+
+function registerPromptKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('🎁 Claim Bonus', 'CLAIM_BONUS')],
-    [Markup.button.callback('📈 Promo Hari Ini', 'PROMO_HARI_INI')],
-    [Markup.button.callback('🤝 Join Agent', 'JOIN_AGENT')],
-    [Markup.button.callback('❓ FAQ', 'FAQ')],
+    [Markup.button.url('📝 Register 99Laju', REGISTER_LINK)],
+    [Markup.button.callback('✅ Saya Dah Register', 'DONE_REGISTER')],
   ]);
 }
 
+function phoneRequestKeyboard() {
+  return Markup.keyboard([[Markup.button.contactRequest('📱 Share Phone Number')]])
+    .resize()
+    .oneTime();
+}
+
+function mainMenuKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🎁 Welcome Bonus', 'WELCOME_BONUS')],
+    [Markup.button.url('💬 Contact CS', CS_LINK)],
+    [Markup.button.callback('🚀 Claim Free Credit', 'CLAIM_FREE_CREDIT')],
+    [Markup.button.callback('📢 Share Bot', 'SHARE_BOT')],
+  ]);
+}
+
+async function sendOnboardingMessage(ctx, user) {
+  const name = user.firstName || 'boss';
+  await ctx.reply(
+    `Hi ${name} 👋\n` +
+      'Untuk continue, sila complete step ni dulu:\n\n' +
+      '1) Register akaun di 99Laju\n' +
+      '2) Tekan "Saya Dah Register"\n' +
+      '3) Share phone number untuk verify',
+    registerPromptKeyboard()
+  );
+}
+
+async function askPhone(ctx) {
+  await ctx.reply(
+    'Bagus ✅ Sekarang share phone number anda (guna button bawah).\n' +
+      'Kalau tak boleh, boleh type nombor manual juga.',
+    phoneRequestKeyboard()
+  );
+}
+
+async function showMainMenu(ctx, user) {
+  const referralCount = Array.isArray(user.referrals) ? user.referrals.length : 0;
+  await ctx.reply(
+    `✅ Verification complete. Welcome to ${BOT_NAME}!\n` +
+      `Progress Free Credit: ${referralCount}/${FREE_CREDIT_TARGET} referral`,
+    mainMenuKeyboard()
+  );
+}
+
 function keywordReply(text) {
-  const t = text.toLowerCase();
+  const t = String(text || '').toLowerCase();
   if (t.includes('bonus') || t.includes('claim')) {
-    return `🎁 Untuk claim bonus, tekan button "Claim Bonus" atau terus chat admin: ${CTA_LINK}`;
+    return '🎁 Tekan menu "Welcome Bonus" untuk tengok offer semasa.';
+  }
+  if (t.includes('cs') || t.includes('support') || t.includes('admin')) {
+    return `💬 Contact CS: ${CS_LINK}`;
   }
   if (t.includes('promo') || t.includes('promosi')) {
-    return '📈 Promo hari ini: Free spin + cashback ikut syarat semasa. Nak detail? Tekan "Promo Hari Ini".';
-  }
-  if (t.includes('agent') || t.includes('join')) {
-    return `🤝 Nak jadi agent? Isi details ringkas dan team akan contact: ${CTA_LINK}`;
-  }
-  if (t.includes('wd') || t.includes('withdraw') || t.includes('deposit')) {
-    return '💳 Deposit/WD biasa laju, tapi ikut queue & verification semasa. Untuk bantuan kes anda, terus PM admin.';
+    return '📈 Promo terkini ada dalam menu. Tekan "Welcome Bonus".';
   }
   return null;
-}
-
-function canReplyByCooldown(userId) {
-  const now = Date.now();
-  const key = String(userId || 'unknown');
-  const last = runtime.lastReplyByUser.get(key) || 0;
-  const delta = now - last;
-  if (delta < COOLDOWN_SECONDS * 1000) return false;
-  runtime.lastReplyByUser.set(key, now);
-  return true;
-}
-
-function scheduleFollowUps(bot, chatId) {
-  const key = String(chatId);
-  if (runtime.followups.has(key)) return;
-
-  const t1 = setTimeout(async () => {
-    try {
-      await bot.telegram.sendMessage(
-        chatId,
-        `⏰ Friendly reminder: Kalau belum claim promo, boleh start sini 👉 ${CTA_LINK}`
-      );
-    } catch (_e) {
-      // ignore send failures
-    }
-  }, 2 * 60 * 60 * 1000); // 2h
-
-  const t2 = setTimeout(async () => {
-    try {
-      await bot.telegram.sendMessage(
-        chatId,
-        `🚀 Last call hari ni: slot promo masih available. Check sekarang 👉 ${CTA_LINK}`
-      );
-    } catch (_e) {
-      // ignore send failures
-    }
-    runtime.followups.delete(key);
-  }, 24 * 60 * 60 * 1000); // 24h
-
-  runtime.followups.set(key, [t1, t2]);
-}
-
-function clearFollowUps(chatId) {
-  const key = String(chatId);
-  const timers = runtime.followups.get(key);
-  if (!timers) return;
-  timers.forEach((timer) => clearTimeout(timer));
-  runtime.followups.delete(key);
 }
 
 const app = express();
@@ -176,13 +237,16 @@ app.use(express.json());
 let botStatus = 'disabled';
 
 app.get('/health', (_req, res) => {
+  const users = Object.values(runtime.users || {});
+  const completed = users.filter((u) => isOnboardingComplete(u)).length;
   res.json({
     ok: true,
     service: 'marketing99laju-telegram-bot',
     botStatus,
-    knownChats: runtime.knownChatIds.size,
+    usersTotal: users.length,
+    usersVerified: completed,
     leadsLogged: runtime.leadsLogged,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIso(),
   });
 });
 
@@ -194,10 +258,12 @@ app.get('/', (_req, res) => {
 });
 
 app.get('/stats', (_req, res) => {
+  const users = Object.values(runtime.users || {});
+  const completed = users.filter((u) => isOnboardingComplete(u)).length;
   res.json({
     botStatus,
-    knownChats: runtime.knownChatIds.size,
-    activeFollowups: runtime.followups.size,
+    usersTotal: users.length,
+    usersVerified: completed,
     leadsLoggedRuntime: runtime.leadsLogged,
   });
 });
@@ -208,7 +274,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
 async function startBot() {
   ensureDataDir();
-  loadState();
+  loadUsers();
 
   if (!BOT_TOKEN) {
     botStatus = 'disabled (missing BOT_TOKEN)';
@@ -218,103 +284,126 @@ async function startBot() {
 
   const bot = new Telegraf(BOT_TOKEN);
 
+  const me = await bot.telegram.getMe();
+  runtime.botUsername = me.username || '';
+
   bot.start(async (ctx) => {
+    const user = getUser(ctx, true);
+    if (!user) return;
+
     const payload = parseStartPayload(ctx.message?.text);
-    const chatId = ctx.chat?.id;
+    const match = payload.match(/^ref_(\d+)$/i);
+    if (match) addReferralIfNeeded(user.userId, match[1]);
 
-    rememberChatId(chatId);
-    clearFollowUps(chatId);
-    scheduleFollowUps(bot, chatId);
+    saveUsers();
+    await logLead(ctx, 'start', { payload: payload || null });
 
-    await logLead(ctx, 'start', {
-      referral: payload || null,
-    });
+    if (isOnboardingComplete(user)) {
+      return showMainMenu(ctx, user);
+    }
 
-    const refText = payload ? `\nRef: ${payload}` : '';
-    return ctx.reply(
-      `Hi ${ctx.from?.first_name || 'boss'} 👋\nSelamat datang ke ${BOT_NAME}.${refText}\nPilih menu bawah ni:`,
-      menuKeyboard()
-    );
+    return sendOnboardingMessage(ctx, user);
+  });
+
+  bot.action('DONE_REGISTER', async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = getUser(ctx, true);
+    if (!user) return;
+
+    user.registered99laju = true;
+    user.updatedAt = nowIso();
+    saveUsers();
+
+    await logLead(ctx, 'done_register_click');
+
+    if (user.phone) {
+      return showMainMenu(ctx, user);
+    }
+    return askPhone(ctx);
+  });
+
+  bot.on('contact', async (ctx) => {
+    const user = getUser(ctx, true);
+    if (!user) return;
+
+    const phone = ctx.message?.contact?.phone_number || null;
+    if (!phone) return;
+
+    user.phone = phone;
+    user.updatedAt = nowIso();
+    saveUsers();
+
+    await logLead(ctx, 'phone_shared', { phone });
+
+    await ctx.reply('✅ Phone number saved.', Markup.removeKeyboard());
+
+    if (!user.registered99laju) {
+      return sendOnboardingMessage(ctx, user);
+    }
+    return showMainMenu(ctx, user);
   });
 
   bot.command('help', (ctx) => {
-    return ctx.reply([
-      '📌 Command list:',
-      '/start - Mula bot & tunjuk menu',
-      '/promo - Promo hari ini',
-      '/claim - Cara claim bonus',
-      '/join - Join agent',
-      '/faq - Soalan biasa',
-      '/health - Status bot',
-      '/stats - Stats ringkas (admin)',
-      '/broadcast <mesej> - Broadcast (admin)',
-    ].join('\n'));
-  });
-
-  bot.command('promo', async (ctx) => {
-    rememberChatId(ctx.chat?.id);
-    await logLead(ctx, 'promo_command');
-    return ctx.reply(`📈 Promo hari ini aktif. Untuk full detail & claim laju: ${CTA_LINK}`);
-  });
-
-  bot.command('claim', async (ctx) => {
-    rememberChatId(ctx.chat?.id);
-    await logLead(ctx, 'claim_command');
-    return ctx.reply(`🎁 Step claim bonus:\n1) Register/login\n2) Contact admin\n3) Bagi screenshot\nLink: ${CTA_LINK}`);
-  });
-
-  bot.command('join', async (ctx) => {
-    rememberChatId(ctx.chat?.id);
-    await logLead(ctx, 'join_command');
-    return ctx.reply(`🤝 Nak join agent, hantar details anda pada link ni: ${CTA_LINK}`);
-  });
-
-  bot.command('faq', async (ctx) => {
-    rememberChatId(ctx.chat?.id);
-    await logLead(ctx, 'faq_command');
     return ctx.reply(
       [
-        '❓ FAQ ringkas:',
-        '- Deposit minimum ikut promo semasa.',
-        '- Withdraw tertakluk verification.',
-        '- Bonus claim 1 akaun 1 user (tertakluk syarat).',
-        `- Support: ${CTA_LINK}`,
+        '📌 Commands:',
+        '/start - Start & onboarding',
+        '/menu - Open main menu',
+        '/stats - Bot stats (admin)',
+        '/broadcast <mesej> - Broadcast (admin)',
       ].join('\n')
     );
   });
 
-  bot.command('health', (ctx) => {
-    return ctx.reply(`✅ ${BOT_NAME} active. Uptime: ${Math.round(process.uptime())}s`);
+  bot.command('menu', async (ctx) => {
+    const user = getUser(ctx, true);
+    if (!user) return;
+
+    saveUsers();
+
+    if (!isOnboardingComplete(user)) {
+      return sendOnboardingMessage(ctx, user);
+    }
+    return showMainMenu(ctx, user);
   });
 
   bot.command('stats', (ctx) => {
     if (!isAdmin(ctx.from?.id)) {
-      return ctx.reply('⛔ Command ni untuk admin sahaja.');
+      return ctx.reply('⛔ Command ni admin only.');
     }
+
+    const users = Object.values(runtime.users || {});
+    const verified = users.filter((u) => isOnboardingComplete(u));
+
     return ctx.reply(
       [
-        `📊 ${BOT_NAME} stats`,
-        `Known chats: ${runtime.knownChatIds.size}`,
-        `Active followups: ${runtime.followups.size}`,
-        `Leads logged (runtime): ${runtime.leadsLogged}`,
+        `📊 ${BOT_NAME} Stats`,
+        `Total users: ${users.length}`,
+        `Verified users: ${verified.length}`,
+        `Leads logged(runtime): ${runtime.leadsLogged}`,
       ].join('\n')
     );
   });
 
   bot.command('broadcast', async (ctx) => {
     if (!isAdmin(ctx.from?.id)) {
-      return ctx.reply('⛔ Command ni untuk admin sahaja.');
+      return ctx.reply('⛔ Command ni admin only.');
     }
-    const text = (ctx.message?.text || '').replace(/^\/broadcast\s*/i, '').trim();
-    if (!text) {
-      return ctx.reply('Guna: /broadcast <mesej>');
+
+    const text = String(ctx.message?.text || '').replace(/^\/broadcast\s*/i, '').trim();
+    if (!text) return ctx.reply('Guna: /broadcast <mesej>');
+
+    const userList = Object.values(runtime.users || {});
+    const targets = [...new Set(userList.map((u) => u.chatId).filter(Boolean))];
+
+    if (targets.length === 0) {
+      return ctx.reply('Tiada user target lagi untuk broadcast.');
     }
 
     let success = 0;
     let failed = 0;
 
-    const ids = Array.from(runtime.knownChatIds);
-    for (const chatId of ids) {
+    for (const chatId of targets) {
       try {
         await bot.telegram.sendMessage(chatId, `📢 ${text}`);
         success += 1;
@@ -326,52 +415,112 @@ async function startBot() {
     return ctx.reply(`Broadcast done. Success: ${success}, Failed: ${failed}`);
   });
 
-  bot.action('CLAIM_BONUS', async (ctx) => {
+  bot.action('WELCOME_BONUS', async (ctx) => {
     await ctx.answerCbQuery();
-    await logLead(ctx, 'click_claim_bonus');
-    return ctx.reply(`🎁 Claim bonus terus di sini: ${CTA_LINK}`);
-  });
+    const user = getUser(ctx, true);
+    if (!user) return;
 
-  bot.action('PROMO_HARI_INI', async (ctx) => {
-    await ctx.answerCbQuery();
-    await logLead(ctx, 'click_promo_hari_ini');
-    return ctx.reply(`📈 Promo hari ini dah live. Details penuh: ${CTA_LINK}`);
-  });
+    if (!isOnboardingComplete(user)) {
+      return sendOnboardingMessage(ctx, user);
+    }
 
-  bot.action('JOIN_AGENT', async (ctx) => {
-    await ctx.answerCbQuery();
-    await logLead(ctx, 'click_join_agent');
-    return ctx.reply(`🤝 Jom join agent. Register interest di sini: ${CTA_LINK}`);
-  });
+    await logLead(ctx, 'click_welcome_bonus');
 
-  bot.action('FAQ', async (ctx) => {
-    await ctx.answerCbQuery();
-    await logLead(ctx, 'click_faq');
     return ctx.reply(
-      [
-        '❓ FAQ:',
-        '- Bonus ikut terma semasa.',
-        '- Proses deposit/WD ikut verification.',
-        `- Team support: ${CTA_LINK}`,
-      ].join('\n')
+      `🎁 Welcome Bonus tersedia untuk member baru.\n` +
+        `Register: ${REGISTER_LINK}\n` +
+        `Lepas tu contact CS untuk claim: ${CS_LINK}`
+    );
+  });
+
+  bot.action('CLAIM_FREE_CREDIT', async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = getUser(ctx, true);
+    if (!user) return;
+
+    if (!isOnboardingComplete(user)) {
+      return sendOnboardingMessage(ctx, user);
+    }
+
+    const referrals = Array.isArray(user.referrals) ? user.referrals.length : 0;
+    const left = Math.max(0, FREE_CREDIT_TARGET - referrals);
+
+    await logLead(ctx, 'click_claim_free_credit', { referrals });
+
+    if (referrals >= FREE_CREDIT_TARGET) {
+      return ctx.reply(
+        `🎉 Tahniah! Anda capai ${referrals}/${FREE_CREDIT_TARGET} referral.\n` +
+          `Sila contact CS untuk claim RM20: ${CS_LINK}`
+      );
+    }
+
+    return ctx.reply(
+      `🚀 Progress anda: ${referrals}/${FREE_CREDIT_TARGET}.\n` +
+        `Share bot lagi ${left} orang untuk layak claim RM20.\n` +
+        `Tekan "Share Bot" untuk dapat referral link.`
+    );
+  });
+
+  bot.action('SHARE_BOT', async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = getUser(ctx, true);
+    if (!user) return;
+
+    if (!isOnboardingComplete(user)) {
+      return sendOnboardingMessage(ctx, user);
+    }
+
+    const username = runtime.botUsername;
+    if (!username) {
+      return ctx.reply('Bot username belum available. Cuba lagi sebentar.');
+    }
+
+    const link = `https://t.me/${username}?start=ref_${user.userId}`;
+    const referrals = Array.isArray(user.referrals) ? user.referrals.length : 0;
+
+    await logLead(ctx, 'click_share_bot', { referrals, link });
+
+    return ctx.reply(
+      `📢 Share link anda:\n${link}\n\n` +
+        `Progress claim RM20: ${referrals}/${FREE_CREDIT_TARGET}`
     );
   });
 
   bot.on('text', async (ctx) => {
-    const text = (ctx.message?.text || '').trim();
-    const chatId = ctx.chat?.id;
+    const user = getUser(ctx, true);
+    if (!user) return;
 
-    rememberChatId(chatId);
+    saveUsers();
 
-    if (text.startsWith('/')) return;
+    const text = String(ctx.message?.text || '').trim();
+    if (!text || text.startsWith('/')) return;
+
+    if (!user.phone) {
+      const parsed = parsePhone(text);
+      if (parsed) {
+        user.phone = parsed;
+        user.updatedAt = nowIso();
+        saveUsers();
+        await logLead(ctx, 'phone_manual_input', { phone: parsed });
+
+        if (!user.registered99laju) {
+          await ctx.reply('✅ Phone number saved. Sila register 99Laju dulu ya.');
+          return sendOnboardingMessage(ctx, user);
+        }
+
+        return showMainMenu(ctx, user);
+      }
+    }
+
+    if (!isOnboardingComplete(user)) {
+      return sendOnboardingMessage(ctx, user);
+    }
 
     const auto = keywordReply(text);
-    if (!auto) return;
-
-    if (!canReplyByCooldown(ctx.from?.id)) return;
-
-    await logLead(ctx, 'keyword_trigger', { text });
-    return ctx.reply(auto);
+    if (auto) {
+      await logLead(ctx, 'keyword_trigger', { text });
+      return ctx.reply(auto);
+    }
   });
 
   await bot.launch();
@@ -385,10 +534,6 @@ async function startBot() {
     } catch (_e) {
       // noop
     }
-    for (const timers of runtime.followups.values()) {
-      timers.forEach((timer) => clearTimeout(timer));
-    }
-    runtime.followups.clear();
     server.close(() => process.exit(0));
   };
 
