@@ -7,6 +7,7 @@ const { Telegraf, Markup } = require('telegraf');
 const PORT = Number(process.env.PORT || 3000);
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const BOT_NAME = process.env.BOT_NAME || 'Marketing99Laju Bot';
+const BOT_USERNAME = process.env.BOT_USERNAME || '';
 const REGISTER_LINK = process.env.REGISTER_LINK || 'https://99laju.com';
 const CS_LINK = process.env.CS_LINK || 'https://t.me/marketing99laju';
 const ADMIN_IDS = new Set(
@@ -284,8 +285,18 @@ async function startBot() {
 
   const bot = new Telegraf(BOT_TOKEN);
 
-  const me = await bot.telegram.getMe();
-  runtime.botUsername = me.username || '';
+  runtime.botUsername = BOT_USERNAME;
+  try {
+    const me = await Promise.race([
+      bot.telegram.getMe(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('getMe timeout')), 10000)
+      ),
+    ]);
+    runtime.botUsername = me?.username || runtime.botUsername;
+  } catch (err) {
+    console.warn('[bot] getMe failed, using BOT_USERNAME fallback:', err.message);
+  }
 
   bot.start(async (ctx) => {
     const user = getUser(ctx, true);
@@ -523,9 +534,14 @@ async function startBot() {
     }
   });
 
-  await bot.launch();
-  botStatus = 'active';
-  console.log('[bot] started');
+  botStatus = 'starting';
+  bot.launch().then(() => {
+    botStatus = 'active';
+    console.log('[bot] started');
+  }).catch((err) => {
+    botStatus = `error: ${err.message}`;
+    console.error('[bot] launch failed', err);
+  });
 
   const shutdown = async (signal) => {
     console.log(`[bot] ${signal} received, shutting down...`);
