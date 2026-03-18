@@ -1,0 +1,6 @@
+services:
+  bot:
+    build: .
+    environment:
+      - START_PHOTO_URL=https://raw.githubusercontent.com/panadol94/marketing99laju-telegram-bot/main/src/start-image.jpg
+    restart: always
