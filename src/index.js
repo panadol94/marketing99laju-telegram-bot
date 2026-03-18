@@ -10,6 +10,7 @@ const BOT_NAME = process.env.BOT_NAME || 'Marketing99Laju Bot';
 const BOT_USERNAME = process.env.BOT_USERNAME || '';
 const REGISTER_LINK = process.env.REGISTER_LINK || 'https://99laju.com';
 const CS_LINK = process.env.CS_LINK || 'https://t.me/marketing99laju';
+const START_PHOTO_URL = process.env.START_PHOTO_URL || '';
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_IDS || '')
     .split(',')
@@ -191,14 +192,20 @@ function mainMenuKeyboard() {
 
 async function sendOnboardingMessage(ctx, user) {
   const name = user.firstName || 'boss';
-  await ctx.reply(
-    `Hi ${name} 👋\n` +
+  const text = `Hi ${name} 👋\n` +
       'Untuk continue, sila complete step ni dulu:\n\n' +
       '1) Register akaun di 99Laju\n' +
       '2) Tekan "Saya Dah Register"\n' +
-      '3) Share phone number untuk verify',
-    registerPromptKeyboard()
-  );
+      '3) Share phone number untuk verify';
+  
+  if (START_PHOTO_URL) {
+    await ctx.replyWithPhoto(START_PHOTO_URL, { 
+      caption: text, 
+      reply_markup: registerPromptKeyboard().reply_markup 
+    });
+  } else {
+    await ctx.reply(text, registerPromptKeyboard());
+  }
 }
 
 async function askPhone(ctx) {
